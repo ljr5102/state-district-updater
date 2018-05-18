@@ -1,0 +1,399 @@
+<html>
+  <head></head>
+
+  <style>
+    form {
+      width: 40%;
+    }
+    form input {
+      width: 100%;
+    }
+    #prep-sql > li {
+      width: 1000px;
+    }
+  </style>
+
+  <body>
+    <div>
+      <div>
+        <form method="GET" action="https://accounts.google.com/o/oauth2/v2/auth">
+          <label>Google Authentication Link
+            <input name="scope" value="" />
+          </label>
+          <label>Redirect URI
+            <input name="redirect_uri" value="" />
+          <label>
+          <label>Response Type
+            <input name="response_type" readonly value="code" />
+          </label>
+          <label>Client ID
+            <input id="client_id" name="client_id" value="" />
+          </label>
+          <input style="width: 50%; margin: auto" type="submit" value="Submit" />
+        </form>
+        <div>
+          <div>Client Secret</div>
+          <input id="client-secret" value="" />
+        </div>
+        <div id="auth-code" style="display: none;">
+          <div>Auth Code</div>
+          <input id="auth-code-value" readonly value="" />
+          <button id="auth-code-submit" type="button">Submit For Token</button>
+        </div>
+        <div id="access-token" style="display: none;">
+          <label>Access Token
+            <input id="access-token-value" readonly value="" />
+          </label>
+          <label>House Table Id
+            <input id="table-id" value="" />
+          </label>
+          <button id="execute-update" type="button" style="display: block">EXECUTE HOUSE UPDATES!</button>
+          <label>Senate Table Id
+            <input id="senate-table-id" value="" />
+          <button id="execute-senate-update" type="button" style="display: block">EXECUTE SENATE UPDATES!</button>
+        </div>
+        <div>
+          <div id="prep-sql-header"></div>
+          <ul id="prep-sql">
+          </ul>
+        </div>
+      </div>
+    </div>
+  </body>
+
+  <script>
+    (function(env){
+      console.log('script here!')
+      var FusionAuth = env.FusionAuth = {};
+      if (location.search.length > 0) {
+        var auth = document.getElementById('auth-code');
+        auth.style.display = "block";
+        var val = document.getElementById('auth-code-value');
+        val.value = location.search.slice(6);
+        document.getElementById('auth-code-submit').addEventListener('click', function () {
+          FusionAuth.authenticateToken(val.value);
+        })
+      }
+      FusionAuth.authenticateToken = function(code) {
+        console.log('executed')
+        console.log(code)
+        var link = 'https://www.googleapis.com/oauth2/v4/token';
+        link += '?code=' + code;
+        link += '&client_id=' + document.getElementById('client_id').value;
+        link += '&client_secret=' + document.getElementById('client-secret').value;
+        link += '&redirect_uri=' + location.origin;
+        link += '&grant_type=authorization_code';
+        console.log(link)
+        fetch(link, { method: 'POST', 'Content-Type': 'application/json' }).then(resp => {
+          return resp.json()
+        }).then(json => {
+          console.log(json);
+          document.getElementById('access-token').style.display = "block";
+          document.getElementById('access-token-value').value = json.access_token;
+          document.getElementById('execute-update').addEventListener("click", function () {
+            executeUpdates(json.access_token, document.getElementById('table-id').value);
+          })
+          document.getElementById('execute-senate-update').addEventListener("click", function () {
+            executeSenateUpdates(json.access_token, document.getElementById('senate-table-id').value);
+          })
+        })
+      }
+
+      function distConvert(dist) {
+        if (dist === undefined) {
+          return null;
+        } else if (dist === 0) {
+          return 'AL';
+        } else if (dist.toString().length < 2) {
+          return '0' + dist.toString();
+        } else {
+          return dist.toString();
+        }
+      }
+
+      function colorConvert(party) {
+        if (party === 'Republican') {
+          return 'red';
+        } else if (party === 'Democrat') {
+          return 'blue';
+        } else {
+          return 'green';
+        }
+      }
+
+      function prepCongressJson(json) {
+        return json.map(cong => {
+          trm = cong.terms.find(term => new Date(term.end) > Date.now())
+          return {
+            state: trm.state,
+            district: distConvert(trm.district),
+            party: trm.party,
+            color: colorConvert(trm.party),
+          };
+        }).filter(mem => mem.district);
+      }
+
+      function prepSenateJson(json) {
+        return json.map(sen => {
+          trm = sen.terms.find(term => new Date(term.end) > Date.now())
+          return {
+            state: trm.state,
+            district: distConvert(trm.district),
+            party: trm.caucus || trm.party,
+            color: colorConvert(trm.caucus || trm.party),
+          };
+        }).filter(mem => !mem.district || ['AS', 'DC', 'GU', 'MP', 'PR', 'VI'].indexOf(mem.state) > -1);
+      }
+
+      function fetchCongress() {
+        var link = 'https://theunitedstates.io/congress-legislators/legislators-current.json';
+        return fetch(link, { method: 'GET', 'Content-Type': 'application/json' })
+        .then(resp => resp.json())
+        .then(prepCongressJson);
+      }
+
+      function fetchSenate() {
+        var link = 'https://theunitedstates.io/congress-legislators/legislators-current.json';
+        return fetch(link, { method: 'GET', 'Content-Type': 'application/json' })
+        .then(resp => resp.json())
+        .then(prepSenateJson);
+      }
+
+      function matchRowsToColors(sen) {
+        var uniqStates = new Set(sen.map(sn => sn.state));
+        var stateColors = [];
+        uniqStates.forEach(st => {
+          var stSens = sen.filter(sn => sn.state === st);
+          var color;
+          if (stSens.every(sn => sn.color === 'red')) {
+            color = 'red';
+          } else if (stSens.every(sn => sn.color === 'blue')) {
+            color = 'blue';
+          } else {
+            color = '9900ff';
+          }
+          stateColors.push({ rowId: stSens[0].rowId, color: color, state: stSens[0].state });
+        })
+        return stateColors;
+      }
+
+      function prepSql(congress, tableId) {
+        return congress.map(cong => {
+          var up = "UPDATE " + tableId + " ";
+          var set = "SET color = '" + cong.color + "' ";
+          var where = "WHERE ROWID = '" + cong.rowId + "';";
+          cong.sql = up + set + where;
+          return cong;
+        })
+      }
+
+      function prepSenSql(sen, tableId) {
+        return sen.map(sn => {
+          var up = "UPDATE " + tableId + " ";
+          var set = "SET Color = '" + sn.color + "' ";
+          var where = "WHERE ROWID = '" + sn.rowId + "';";
+          sn.sql = up + set + where;
+          return sn;
+        })
+      }
+
+      function displaySql(sql) {
+        var list = sql.map(cong => "<li id=" + cong.rowId + ">" + cong.sql + "</li>");
+        document.getElementById('prep-sql').innerHTML = list.join('');
+      }
+
+      function displaySenSql(sql) {
+        var list = sql.map(sn => "<li id=" + sn.rowId + ">" + sn.sql + "</li>");
+        document.getElementById("prep-sql").innerHTML = list.join('');
+      }
+
+      function fetchRows(token, tableId) {
+        var apiLink = 'https://www.googleapis.com/fusiontables/v2/';
+        var toke = "&access_token=" + token;
+        var rowFetchSql = "SELECT ROWID, Code from " + tableId + ";";
+        var param = "query?sql=" + rowFetchSql;
+        return fetch(apiLink + param + toke, { method: 'GET', 'Content-Type': 'application/json' }).then(resp => resp.json());
+      }
+
+      function fetchSenRows(token, tableId) {
+        var apiLink = 'https://www.googleapis.com/fusiontables/v2/';
+        var toke = "&access_token=" + token;
+        var rowFetchSql = "SELECT ROWID, Name from " + tableId + ";";
+        var param = "query?sql=" + rowFetchSql;
+        return fetch(apiLink + param + toke, { method: 'GET', 'Content-Type': 'application/json' }).then(resp => resp.json());
+      }
+
+      function matchRowIdToDistrict(congress, rows) {
+        var updated = congress.map(cong => {
+          var matchedRow = rows.find(row => row[1] === cong.state + "-" + cong.district);
+          if (matchedRow) {
+            cong.rowId = matchedRow[0];
+          }
+          return cong;
+        });
+        // find vacant seats -> rows in the table that do not have a row id in congress array
+        var vacant = rows.filter(row => !updated.find(cong => cong.rowId === row[0]));
+        vacant.forEach(row => updated.push({ color: 'gray', rowId: row[0] }));
+        return updated;
+      }
+
+      function matchRowIdToSenator(sen, rows ) {
+        var updated = sen.map(sn => {
+          var matchedRow = rows.find(row => row[1] === sn.state);
+          if (matchedRow) {
+            sn.rowId = matchedRow[0];
+          }
+          return sn;
+        });
+        // todo handle vacant seats?
+        return updated;
+      }
+
+      var readyToExecute = 0;
+      var passed = 0;
+      var failed = 0;
+      var remaining = 0;
+
+      function resetStats() {
+        readyToExecute = 0;
+        passed = 0;
+        failed = 0;
+        remaining = 0;
+      }
+
+      var senReadyToExecute = 0;
+      var senPassed = 0;
+      var senFailed = 0;
+      var senRemaining = 0;
+
+      function resetSenateStats() {
+        senReadyToExecute = 0;
+        senPassed = 0;
+        senFailed = 0;
+        senRemaining = 0;
+      }
+
+      function displaySqlProgress() {
+        var el = document.getElementById('prep-sql-header');
+        var readyStr = "<div>" + readyToExecute + " statements ready for execution</div>";
+        var passStr = "<div>" + passed + " statements successfully executed</div>";
+        var failStr = "<div>" + failed + " statements failed</div>";
+        var remStr = "<div>" + remaining + " statements remaining</div>";
+        el.innerHTML = readyStr + passStr + failStr + remStr;
+      }
+
+      function displaySenSqlProgress() {
+        var el = document.getElementById('prep-sql-header');
+        var readyStr = "<div>" + senReadyToExecute + " statements ready for execution</div>";
+        var passStr = "<div>" + senPassed + " statements successfully executed</div>";
+        var failStr = "<div>" + senFailed + " statements failed</div>";
+        var remStr = "<div>" + senRemaining + " statements remaining</div>";
+        el.innerHTML = readyStr + passStr + failStr + remStr;
+      }
+
+      function executeSqlInBatches(link, toke, congress, start, last) {
+        start = start || 0;
+        last = last || 10;
+        console.log("executing sql statements " + start + " through " + last)
+        congress.slice(start, last).map(cong => {
+          var param = "query?sql=" + cong.sql;
+          return fetch(link + param + toke, { method: 'POST', 'Content-Type': 'application/json' })
+          .then(resp => resp.json())
+          .then(json => {
+            console.log(json);
+            remaining -= 1;
+            if (json.error) {
+              failed += 1;
+              var el = document.getElementById(cong.rowId);
+              el.innerHTML = el.innerHTML + "---->ERROR: " + json.error.message;
+              el.style.color = 'red';
+            } else {
+              passed += 1;
+              document.getElementById(cong.rowId).style.color = 'green';
+            }
+            displaySqlProgress();
+          });
+        })
+        window.setTimeout(function() {
+          var newStart = start + 10;
+          var newLast = last + 10;
+          if (!congress[newStart]) {
+            console.log('finished!')
+            return;
+          }
+          executeSqlInBatches(link, toke, congress, newStart, newLast);
+        }, 35000);
+      }
+
+      function executeSenSqlInBatches(link, toke, sen, start, last) {
+        start = start || 0;
+        last = last || 10;
+        console.log("executing sql statements " + start + " through " + last)
+        sen.slice(start, last).map(sn => {
+          var param = "query?sql=" + sn.sql;
+          return fetch(link + param + toke, { method: 'POST', 'Content-Type': 'application/json' })
+          .then(resp => resp.json())
+          .then(json => {
+            console.log(json);
+            senRemaining -= 1;
+            if (json.error) {
+              senFailed += 1;
+              var el = document.getElementById(sn.rowId);
+              el.innerHTML = el.innerHTML + "---->ERROR: " + json.error.message;
+              el.style.color = 'red';
+            } else {
+              senPassed += 1;
+              document.getElementById(sn.rowId).style.color = 'green';
+            }
+            displaySenSqlProgress();
+          });
+        })
+        window.setTimeout(function() {
+          var newStart = start + 10;
+          var newLast = last + 10;
+          if (!sen[newStart]) {
+            console.log('finished!')
+            return;
+          }
+          executeSenSqlInBatches(link, toke, sen, newStart, newLast);
+        }, 35000);
+      }
+
+      function executeUpdates(token, tableId) {
+        resetStats();
+        var apiLink = 'https://www.googleapis.com/fusiontables/v2/';
+        var toke = '&access_token=' + token
+        fetchCongress().then(congress => {
+          fetchRows(token, tableId).then(({ rows }) => {
+            var updatedCong = matchRowIdToDistrict(congress, rows);
+            var sqlToExecute = prepSql(updatedCong.filter(cong => cong.rowId), tableId);
+            readyToExecute = sqlToExecute.length;
+            remaining = sqlToExecute.length;
+            displaySqlProgress();
+            displaySql(sqlToExecute);
+            executeSqlInBatches(apiLink, toke, sqlToExecute)
+          })
+        })
+      }
+
+      function executeSenateUpdates(token, tableId) {
+        resetSenateStats();
+        var apiLink = 'https://www.googleapis.com/fusiontables/v2/';
+        var toke = '&access_token=' + token
+        fetchSenate().then(sen => {
+          fetchSenRows(token, tableId).then(({ rows }) => {
+            var updatedSen = matchRowIdToSenator(sen, rows);
+            var rowToColor = matchRowsToColors(updatedSen);
+            var sqlToExecute = prepSenSql(rowToColor, tableId);
+            senReadyToExecute = sqlToExecute.length;
+            senRemaining = sqlToExecute.length;
+            displaySenSqlProgress();
+            displaySenSql(sqlToExecute);
+            executeSenSqlInBatches(apiLink, toke, sqlToExecute);
+          })
+        });
+      }
+
+    }(this))
+  </script>
+</html>
